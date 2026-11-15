@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Card Vault</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+/* Layout: one column phone app, sticky header with two tabs, bottom-safe padding */
+:root{
+  --bg:#f3f4f8; --card:#ffffff; --fg:#1b1f33; --muted:#646a85; --line:#dfe2ec;
+  --accent:#2f5bd3; --accent-fg:#fff; --gold:#b8860b; --bad:#c0392b;
+  --display:"Space Grotesk",system-ui,sans-serif; --body:Inter,system-ui,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12141f; --card:#1c1f2e; --fg:#e8eaf3; --muted:#9aa0bb; --line:#2c3044;
+  --accent:#7d9cff; --accent-fg:#0c1020; --gold:#e6b84a; --bad:#ff7b6b; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12141f; --card:#1c1f2e; --fg:#e8eaf3; --muted:#9aa0bb; --line:#2c3044;
+  --accent:#7d9cff; --accent-fg:#0c1020; --gold:#e6b84a; --bad:#ff7b6b; color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.45 var(--body);
+  padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);
+  padding:calc(10px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px))}
+h1{font:700 20px var(--display);margin:0 0 8px}
+nav{display:flex;gap:4px}
+nav button{flex:1;background:none;border:0;border-bottom:3px solid transparent;color:var(--muted);
+  font:600 15px var(--body);padding:10px 0;cursor:pointer}
+nav button[aria-selected="true"]{color:var(--accent);border-color:var(--accent)}
+main{padding:16px max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px));
+  max-width:640px;margin:0 auto;display:grid;gap:14px}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;background:var(--accent);color:var(--accent-fg);
+  border:0;border-radius:12px;font:600 16px var(--body);padding:14px;cursor:pointer;width:100%}
+.btn.ghost{background:var(--card);color:var(--fg);border:1px solid var(--line)}
+.btn.small{width:auto;padding:8px 12px;font-size:14px;border-radius:9px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px}
+.row>*{flex:1;min-width:0}
+input[type=search]{width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);
+  background:var(--card);color:var(--fg);font:15px var(--body)}
+#preview{max-height:220px;border-radius:12px;display:block;margin:0 auto}
+#status{color:var(--muted);text-align:center;min-height:1.4em;margin:0}
+.hint{color:var(--muted);font-size:13px;margin:0}
+.item{display:grid;grid-template-columns:64px 1fr;gap:12px;background:var(--card);
+  border:1px solid var(--line);border-radius:14px;padding:10px}
+.item img{width:64px;border-radius:5px}
+.item h3{font:700 16px var(--display);margin:0}
+.meta{color:var(--muted);font-size:13px}
+.variants{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.price{font-variant-numeric:tabular-nums;font-weight:600}
+.eur{color:var(--muted);font-variant-numeric:tabular-nums;font-size:13px}
+.total{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;
+  display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
+.total b{font:700 28px var(--display);color:var(--gold);font-variant-numeric:tabular-nums}
+.qty{display:flex;align-items:center;gap:6px;margin-top:6px}
+.qty button{width:32px;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--bg);
+  color:var(--fg);font-size:18px;cursor:pointer}
+.qty .del{width:auto;padding:0 10px;font-size:13px;color:var(--bad);margin-left:auto}
+.empty{text-align:center;color:var(--muted);padding:32px 8px}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Card Vault</h1>
+  <nav role="tablist">
+    <button id="tab-scan" role="tab" aria-selected="true">Scan</button>
+    <button id="tab-col" role="tab" aria-selected="false">Collection <span id="count"></span></button>
+  </nav>
+</header>
+
+<main id="view-scan">
+  <label class="btn" for="photo">📷 Scan a card</label>
+  <input id="photo" type="file" accept="image/*" capture="environment" hidden>
+  <p class="hint">Fill the photo with the card. Good light, no glare on the number at the bottom.</p>
+  <img id="preview" alt="" hidden>
+  <p id="status" aria-live="polite"></p>
+  <form id="search" class="row">
+    <input id="q" type="search" placeholder="Or type: Pikachu  or  25/165" autocomplete="off">
+    <button class="btn small" style="flex:0 0 auto">Find</button>
+  </form>
+  <div id="results" style="display:grid;gap:10px"></div>
+</main>
+
+<main id="view-col" hidden>
+  <div class="total">
+    <div><div class="meta">Collection value (TCGplayer market)</div><b id="sum-usd">$0.00</b></div>
+    <div class="eur" id="sum-eur"></div>
+  </div>
+  <div class="row">
+    <button class="btn ghost small" id="refresh">↻ Update prices</button>
+    <button class="btn ghost small" id="export">Save backup</button>
+    <label class="btn ghost small" for="import">Load backup</label>
+    <input id="import" type="file" accept="application/json,.json" hidden>
+  </div>
+  <div id="list" style="display:grid;gap:10px"></div>
+</main>
+
+<script>
+const API = 'https://api.pokemontcg.io/v2/cards';
+const FIELDS = 'id,name,number,set,images,tcgplayer,cardmarket';
+const $ = s => document.querySelector(s);
+const usd = n => n == null ? '–' : '$' + n.toFixed(2);
+const eur = n => n == null ? '–' : '€' + n.toFixed(2);
+const pretty = k => k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()).replace('1st', '1st ');
+const cardNo = c => c.set.printedTotal ? `${c.number}/${c.set.printedTotal}` : c.number;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------- storage (on this phone) ----------
+let col = [];
+try { col = JSON.parse(localStorage.getItem('vault') || '[]'); } catch {}
+function save() {
+  try { localStorage.setItem('vault', JSON.stringify(col)); } catch { alert('Could not save. Is private mode on?'); }
+  renderCol();
+}
+
+// ---------- card number parsing ----------
+// "025/165" -> {num:"025", total:"165"}; also "TG05/TG30", "SV049/SV122"
+function parseNum(text) {
+  const m = text.toUpperCase().match(/([A-Z]{0,3}\d{1,3})\s*\/\s*([A-Z]{0,3}\d{2,3})/);
+  return m ? { num: m[1], total: m[2] } : null;
+}
+function numQuery(p, withTotal = true) {
+  const n = /^\d+$/.test(p.num) ? String(+p.num) : p.num;
+  let q = `number:"${n}"`;
+  if (withTotal && /^\d+$/.test(p.total)) q += ` set.printedTotal:${+p.total}`;
+  return q;
+}
+
+// The price site often fails at random (5xx, sometimes without CORS headers = "Failed to fetch"), so retry.
+async function api(q, size = 30) {
+  const url = `${API}?q=${encodeURIComponent(q)}&pageSize=${size}&orderBy=-set.releaseDate&select=${FIELDS}`;
+  for (let i = 0; i < 4; i++) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return (await r.json()).data;
+      if (r.status < 500) throw new Error('Price site answered ' + r.status);
+    } catch (e) { if (e.message.startsWith('Price site')) throw e; }
+    await new Promise(s => setTimeout(s, 1000 * (i + 1)));
+  }
+  throw new Error('Price site is not answering. Try again in a minute.');
+}
+
+// ---------- scan ----------
+let worker;
+async function ocr(img, bottomOnly) {
+  const cropH = bottomOnly ? Math.round(img.height * 0.15) : img.height;
+  const scale = Math.min(2, 2400 / img.width);
+  const c = document.createElement('canvas');
+  c.width = img.width * scale; c.height = cropH * scale;
+  const ctx = c.getContext('2d');
+  ctx.filter = 'grayscale(1) contrast(1.8)';
+  ctx.drawImage(img, 0, img.height - cropH, img.width, cropH, 0, 0, c.width, c.height);
+  if (!worker) {
+    worker = await Tesseract.createWorker('eng');
+    await worker.setParameters({ tessedit_char_whitelist: '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ ' });
+  }
+  return (await worker.recognize(c)).data.text;
+}
+
+$('#photo').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  $('#preview').src = URL.createObjectURL(f); $('#preview').hidden = false;
+  $('#results').innerHTML = '';
+  try {
+    const img = await createImageBitmap(f);
+    status('Reading the card number…');
+    let p = parseNum(await ocr(img, true));
+    if (!p) { status('Looking harder…'); p = parseNum(await ocr(img, false)); }
+    if (!p) return status('Could not read the number. Try again, or type it below.');
+    $('#q').value = `${p.num}/${p.total}`;
+    await findByNum(p);
+  } catch (err) { status('Error: ' + err.message); }
+};
+
+async function findByNum(p) {
+  status(`Found ${p.num}/${p.total}. Looking up price…`);
+  let cards = await api(numQuery(p));
+  if (!cards.length) cards = await api(numQuery(p, false));
+  showResults(cards);
+}
+
+$('#search').onsubmit = async e => {
+  e.preventDefault();
+  const t = $('#q').value.trim().replace(/"/g, '');
+  if (!t) return;
+  try {
+    const p = parseNum(t);
+    if (p) return await findByNum(p);
+    status('Searching…');
+    showResults(await api(`name:"${t}*"`));
+  } catch (err) { status('Error: ' + err.message); }
+};
+
+function status(t) { $('#status').textContent = t; }
+
+let shown = [];
+function showResults(cards) {
+  shown = cards;
+  status(cards.length ? (cards.length > 1 ? 'Tap the version that matches your card:' : 'Is this your card?') : 'No card found. Check the number and try again.');
+  $('#results').innerHTML = cards.map((c, i) => {
+    const tp = c.tcgplayer?.prices || {};
+    const keys = Object.keys(tp);
+    const btns = keys.length
+      ? keys.map(k => `<button class="btn small" data-i="${i}" data-v="${k}">+ ${pretty(k)} <span class="price">${usd(tp[k].market ?? tp[k].mid)}</span></button>`).join('')
+      : `<button class="btn small" data-i="${i}" data-v="normal">+ Add</button>`;
+    return `<div class="item"><img src="${c.images.small}" alt="" loading="lazy">
+      <div><h3>${esc(c.name)}</h3>
+      <div class="meta">${esc(c.set.name)} · ${esc(cardNo(c))} · Cardmarket ${eur(c.cardmarket?.prices?.trendPrice)}</div>
+      <div class="variants">${btns}</div></div></div>`;
+  }).join('');
+}
+
+function pricesOf(c, v) {
+  const tp = c.tcgplayer?.prices?.[v];
+  const cm = c.cardmarket?.prices || {};
+  return {
+    usd: tp ? (tp.market ?? tp.mid ?? null) : null,
+    eur: (v === 'reverseHolofoil' ? cm.reverseHoloTrend : cm.trendPrice) ?? null,
+  };
+}
+
+$('#results').onclick = e => {
+  const b = e.target.closest('button[data-i]'); if (!b) return;
+  const c = shown[b.dataset.i], v = b.dataset.v, key = c.id + '|' + v;
+  const have = col.find(x => x.key === key);
+  if (have) have.qty++;
+  else col.push({ key, id: c.id, variant: v, name: c.name, set: c.set.name,
+    num: cardNo(c), img: c.images.small, qty: 1, ...pricesOf(c, v) });
+  save();
+  status(`Added ${c.name} (${pretty(v)}). Scan the next one!`);
+  b.textContent = '✓ Added';
+};
+
+// ---------- collection ----------
+function renderCol() {
+  const n = col.reduce((s, x) => s + x.qty, 0);
+  $('#count').textContent = n ? `(${n})` : '';
+  $('#sum-usd').textContent = usd(col.reduce((s, x) => s + (x.usd || 0) * x.qty, 0));
+  $('#sum-eur').textContent = 'Cardmarket ' + eur(col.reduce((s, x) => s + (x.eur || 0) * x.qty, 0));
+  const sorted = [...col].sort((a, b) => (b.usd || 0) - (a.usd || 0));
+  $('#list').innerHTML = sorted.length ? sorted.map(x => `<div class="item"><img src="${x.img}" alt="" loading="lazy">
+    <div><h3>${esc(x.name)}</h3>
+    <div class="meta">${esc(x.set)} · ${esc(x.num)} · ${pretty(x.variant)}</div>
+    <div><span class="price">${usd(x.usd)}</span> <span class="eur">· ${eur(x.eur)}</span></div>
+    <div class="qty"><button data-k="${esc(x.key)}" data-d="-1" aria-label="One less">−</button>
+      <span class="price">×${x.qty}</span>
+      <button data-k="${esc(x.key)}" data-d="1" aria-label="One more">+</button>
+      <button class="del" data-k="${esc(x.key)}" data-d="del">Remove</button></div></div></div>`).join('')
+    : '<p class="empty">No cards yet. Go to Scan and add your first card.</p>';
+}
+
+let armed = null; // tap Remove twice to delete
+$('#list').onclick = e => {
+  const b = e.target.closest('button[data-k]'); if (!b) return;
+  const x = col.find(c => c.key === b.dataset.k); if (!x) return;
+  if (b.dataset.d === 'del') {
+    if (armed !== x.key) { armed = x.key; b.textContent = 'Tap again to remove'; return; }
+    col = col.filter(c => c !== x);
+  } else {
+    x.qty = Math.max(1, x.qty + +b.dataset.d);
+  }
+  armed = null; save();
+};
+
+$('#refresh').onclick = async () => {
+  const b = $('#refresh'); b.disabled = true;
+  try {
+    const ids = [...new Set(col.map(x => x.id))];
+    for (let i = 0; i < ids.length; i += 25) {
+      b.textContent = `Updating ${i}/${ids.length}…`;
+      const cards = await api(ids.slice(i, i + 25).map(id => `id:${id}`).join(' OR '), 25);
+      for (const c of cards) for (const x of col) if (x.id === c.id) Object.assign(x, pricesOf(c, x.variant));
+    }
+    save(); b.textContent = '✓ Prices updated';
+  } catch (err) { b.textContent = 'Failed, tap to retry'; }
+  b.disabled = false;
+};
+
+$('#export').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(col, null, 1)], { type: 'application/json' }));
+  a.download = `card-vault-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+};
+$('#import').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (!Array.isArray(data) || !data.every(x => x.key && x.id && x.qty)) throw 0;
+    col = data; save(); alert(`Loaded ${data.length} cards.`);
+  } catch { alert('That file is not a Card Vault backup.'); }
+};
+
+// ---------- tabs ----------
+function tab(which) {
+  $('#view-scan').hidden = which !== 'scan';
+  $('#view-col').hidden = which !== 'col';
+  $('#tab-scan').setAttribute('aria-selected', which === 'scan');
+  $('#tab-col').setAttribute('aria-selected', which === 'col');
+}
+$('#tab-scan').onclick = () => tab('scan');
+$('#tab-col').onclick = () => tab('col');
+renderCol();
+</script>
+</body>
+</html>
