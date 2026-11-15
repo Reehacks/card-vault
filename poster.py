@@ -4,6 +4,7 @@ Run:  python poster.py
 Your Tradera keys and login are saved in tradera.json next to this file. Never share or commit it.
 """
 import json, os, sys, uuid, secrets, socket, hmac, webbrowser, urllib.request, urllib.error, urllib.parse
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -13,6 +14,15 @@ API = 'https://api.tradera.com/v4/'
 
 cfg = json.load(open(CFG, encoding='utf8')) if os.path.exists(CFG) else {}
 def save(): json.dump(cfg, open(CFG, 'w', encoding='utf8'), indent=1)
+
+def logged_in():  # a token without a valid, future expiry date counts as logged out
+    try: return bool(cfg.get('token')) and datetime.fromisoformat(cfg['exp']) > datetime.now(timezone.utc)
+    except (KeyError, ValueError, TypeError): return False
+
+def lan_ip():  # this PC's address on the home Wi-Fi
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('10.255.255.255', 1)); return s.getsockname()[0]
+    except OSError: return 'THIS-PC-IP'
 
 def login_url():
     cfg['skey'] = str(uuid.uuid4()); save()
@@ -45,7 +55,9 @@ class H(BaseHTTPRequestHandler):
             else: msg = 'Tradera login did not finish. Start poster.py again.'
             return self.send(200, f'<h2 style="font-family:sans-serif">{msg}</h2>'.encode(), 'text/html; charset=utf-8')
         if u.path == '/api/status':
-            return self.send(200, json.dumps({'loggedIn': bool(cfg.get('token')), 'exp': cfg.get('exp')}).encode())
+            st = {'loggedIn': logged_in()}
+            if self.client_address[0] == '127.0.0.1': st['phoneUrl'] = f'http://{lan_ip()}:{PORT}/?k={cfg["key"]}'
+            return self.send(200, json.dumps(st).encode())
         if u.path == '/api/login':
             self.send_response(302); self.send_header('Location', login_url()); self.end_headers(); return
         self.proxy('GET')
@@ -80,15 +92,13 @@ if __name__ == '__main__':
         cfg['publicKey'] = input('Public key: ').strip()
         save()
     if not cfg.get('key'): cfg['key'] = secrets.token_urlsafe(9); save()
-    try:  # this PC's address on the home Wi-Fi
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('10.255.255.255', 1)); ip = s.getsockname()[0]
-    except OSError: ip = 'THIS-PC-IP'
+    ip = lan_ip()
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), H)
     url = f'http://localhost:{PORT}/?k={cfg["key"]}'
     print(f'Card Vault poster runs. Keep this window open, Ctrl+C to stop.')
     print(f'  On this PC:          {url}')
     print(f'  On your phone (same Wi-Fi):  http://{ip}:{PORT}/?k={cfg["key"]}')
     print('If Windows asks about the firewall, allow Python on private networks.')
-    webbrowser.open(url if cfg.get('token') else f'http://localhost:{PORT}/api/login')
+    webbrowser.open(url if logged_in() else f'http://localhost:{PORT}/api/login')
     try: srv.serve_forever()
     except KeyboardInterrupt: sys.exit(0)
