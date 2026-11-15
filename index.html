@@ -65,6 +65,23 @@ input[type=search]{width:100%;padding:12px;border-radius:12px;border:1px solid v
 .qty .del{width:auto;padding:0 10px;font-size:13px;color:var(--bad);margin-left:auto}
 .empty{text-align:center;color:var(--muted);padding:32px 8px}
 a{color:var(--accent)}
+.qty .sellb{width:auto;padding:0 10px;font-size:13px;color:var(--accent);margin-left:auto}
+.qty .sellb+.del{margin-left:0}
+/* sell form */
+#sell{width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 32px);border:1px solid var(--line);border-radius:16px;
+  background:var(--card);color:var(--fg);padding:16px}
+#sell::backdrop{background:rgba(0,0,0,.5)}
+#sell form{display:grid;gap:12px}
+#sell h3{font:700 18px var(--display);margin:0}
+#sell h4{font:700 15px var(--display);margin:0}
+#sell section{border-top:1px solid var(--line);padding-top:12px;display:grid;gap:8px}
+#sell label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+#sell input,#sell select,#sell textarea{width:100%;padding:9px;border-radius:9px;border:1px solid var(--line);
+  background:var(--bg);color:var(--fg);font:14px var(--body)}
+.shots{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.shots img{width:100%;aspect-ratio:63/88;object-fit:cover;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
+#tOut{margin:0;min-height:1.4em}
+#tOut.bad{color:var(--bad)}
 /* camera overlay: always dark, it shows a live camera */
 #cam{position:fixed;inset:0;z-index:20;background:#000;overflow:hidden}
 #video{width:100%;height:100%;object-fit:cover;display:block}
@@ -115,6 +132,47 @@ a{color:var(--accent)}
   </div>
   <div id="list" style="display:grid;gap:10px"></div>
 </main>
+
+<dialog id="sell">
+  <form method="dialog">
+    <h3 id="sTitle"></h3>
+    <div class="shots">
+      <label>Front <img id="fImg" alt=""><input id="fIn" type="file" accept="image/*" capture="environment"></label>
+      <label>Back <img id="bImg" alt=""><input id="bIn" type="file" accept="image/*" capture="environment"></label>
+    </div>
+    <label>Title <input id="tTitle" maxlength="80"></label>
+    <label>Text <textarea id="tDesc" rows="4"></textarea></label>
+    <section>
+      <h4>Tradera</h4>
+      <p class="meta" id="trState"></p>
+      <div id="trFields" hidden style="display:grid;gap:8px">
+        <label>Category <select id="tCat"></select></label>
+        <div id="tAttrs" style="display:grid;gap:8px"></div>
+        <div class="row">
+          <label>Type <select id="tType"><option value="1">Auction</option><option value="3">Buy now only</option></select></label>
+          <label>Price (kr) <input id="tPrice" type="number" min="1" inputmode="numeric"></label>
+          <label>Days <input id="tDays" type="number" min="1" value="7" inputmode="numeric"></label>
+        </div>
+        <p class="meta" id="tHint"></p>
+        <label>Shipping <select id="tShip"></select></label>
+        <div class="row">
+          <button type="button" class="btn small ghost" id="tCheck">Check only</button>
+          <button type="button" class="btn small" id="tPost">Post on Tradera</button>
+        </div>
+        <p id="tOut" aria-live="polite"></p>
+      </div>
+    </section>
+    <section>
+      <h4>Cardmarket</h4>
+      <p class="meta" id="cmInfo"></p>
+      <div class="row">
+        <button type="button" class="btn small ghost" id="cmCopy">Copy text</button>
+        <button type="button" class="btn small ghost" id="cmOpen">Open on Cardmarket</button>
+      </div>
+    </section>
+    <button class="btn ghost">Close</button>
+  </form>
+</dialog>
 
 <div id="cam" hidden>
   <video id="video" playsinline muted autoplay></video>
@@ -315,7 +373,11 @@ async function startCam() {
     try {
       const cards = await findByNum(p);
       if (!scanning) break;
-      if (cards.length) { stopCam(); $('#q').value = k; showResults(cards); return; }
+      if (cards.length) {
+        const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+        c.getContext('2d').drawImage(v, 0, 0); c.toBlob(b => lastPhoto = b, 'image/jpeg', 0.9);
+        stopCam(); $('#q').value = k; showResults(cards); return;
+      }
       misses.add(k); camStatus(`No card ${k}. Keep holding still…`);
     } catch (e) { camStatus(e.message); await sleep(1500); }
     $('#guide').classList.remove('hit');
@@ -336,6 +398,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && sca
 $('#photo').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f) return;
+  lastPhoto = f;
   $('#preview').src = URL.createObjectURL(f); $('#preview').hidden = false;
   $('#results').innerHTML = '';
   try {
@@ -356,6 +419,7 @@ $('#search').onsubmit = async e => {
   e.preventDefault();
   const t = $('#q').value.trim().replace(/"/g, '');
   if (!t) return;
+  lastPhoto = null;
   $('#results').innerHTML = '';
   status('Searching…');
   try {
@@ -386,6 +450,7 @@ $('#results').onclick = e => {
   if (have) have.qty++;
   else col.push({ key, src: c.src, id: c.id, variant: x.v, name: c.name, set: c.set, num: c.no,
     img: c.img, qty: 1, usd: x.usd, eur: x.eur });
+  if (lastPhoto) photos[key] = lastPhoto; // kept in memory only, for the Sell form
   save();
   status(`Added ${c.name} (${pretty(x.v)}). Scan the next one!`);
   b.textContent = '✓ Added';
@@ -405,6 +470,7 @@ function renderCol() {
     <div class="qty"><button data-k="${esc(x.key)}" data-d="-1" aria-label="One less">−</button>
       <span class="price">×${x.qty}</span>
       <button data-k="${esc(x.key)}" data-d="1" aria-label="One more">+</button>
+      <button class="sellb" data-k="${esc(x.key)}" data-d="sell">Sell</button>
       <button class="del" data-k="${esc(x.key)}" data-d="del">Remove</button></div></div></div>`).join('')
     : '<p class="empty">No cards yet. Go to Scan and add your first card.</p>';
 }
@@ -413,6 +479,7 @@ let armed = null; // tap Remove twice to delete
 $('#list').onclick = e => {
   const b = e.target.closest('button[data-k]'); if (!b) return;
   const x = col.find(c => c.key === b.dataset.k); if (!x) return;
+  if (b.dataset.d === 'sell') return openSell(x);
   if (b.dataset.d === 'del') {
     if (armed !== x.key) { armed = x.key; b.textContent = 'Tap again to remove'; return; }
     col = col.filter(c => c !== x);
@@ -465,6 +532,154 @@ $('#import').onchange = async e => {
     col = data; save(); alert(`Loaded ${data.length} cards.`);
   } catch { alert('That file is not a Card Vault backup.'); }
 };
+
+// ---------- sell: Tradera (through poster.py on a PC) and Cardmarket helper ----------
+let lastPhoto = null, selling = null, sellImgs = {};
+const photos = {}; // scan photo per collection key, in memory only
+const tr = async (path, opt = {}) => {
+  const r = await fetch('/api/tradera/' + path, { ...opt, headers: { 'X-Vault': '1', 'Content-Type': 'application/json' } });
+  const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = t; }
+  if (!r.ok) throw new Error(`Tradera said ${r.status}: ${typeof d === 'string' ? d : JSON.stringify(d)}`.slice(0, 400));
+  return d;
+};
+let poster, sekRate, cats, shipFor = {};
+const posterStatus = async () => poster ??= await fetch('/api/status').then(r => r.ok ? r.json() : false).catch(() => false);
+const getSek = async () => sekRate ??= (await getJSON('https://api.frankfurter.dev/v1/latest?from=EUR&to=SEK').catch(() => null))?.rates?.SEK || 11;
+async function pokemonCats() {
+  if (cats) return cats;
+  const out = [], walk = (n, path, pk) => {
+    const p = [...path, n.name]; pk ||= /pok[eé]mon/i.test(n.name);
+    if (n.childCategories?.length) n.childCategories.forEach(c => walk(c, p, pk));
+    else if (pk) out.push({ id: n.id, name: p.join(' › ') });
+  };
+  (await tr('categories')).forEach(n => walk(n, [], false));
+  return cats = out;
+}
+async function cardInfo(x) {
+  if ((x.src || 'ptcg') === 'dex') {
+    const c = await getJSON(`${DEX}/cards/${encodeURIComponent(x.id)}`);
+    const s = c?.set?.id && await getJSON(`${DEX}/sets/${c.set.id}`);
+    return { rarity: c?.rarity, serie: s?.serie?.name, year: s?.releaseDate?.slice(0, 4), local: c?.localId };
+  }
+  const c = (await getJSON(`${PTCG}/${encodeURIComponent(x.id)}`))?.data;
+  return { rarity: c?.rarity, serie: c?.set?.series, year: c?.set?.releaseDate?.slice(0, 4), local: c?.number };
+}
+function listingText(x, i) {
+  const no = String(i.local ?? x.num.split('/')[0]).replace(/^0+(?=\d)/, '');
+  const bare = s => s.toLowerCase().replace(/and|[^a-z]/g, '');
+  const set = x.set + (i.serie && bare(i.serie) !== bare(x.set) ? ' - ' + i.serie : '');
+  return {
+    title: `Pokémon ${x.name} #${no} ${x.set}${i.year ? ' ' + i.year : ''}`.slice(0, 80),
+    desc: [`${x.name} #${no} från setet ${set}${i.year ? ' som släpptes år ' + i.year : ''}`,
+      i.rarity && `Raritet: ${i.rarity}`,
+      x.variant !== 'normal' && `Version: ${pretty(x.variant)}`,
+      'Språk: Engelska'].filter(Boolean).join('\n'),
+  };
+}
+const setShot = (side, src) => {
+  sellImgs[side] = src; const im = $(side === 'f' ? '#fImg' : '#bImg');
+  if (src) im.src = src instanceof Blob ? URL.createObjectURL(src) : src; else im.removeAttribute('src');
+};
+$('#fIn').onchange = e => e.target.files[0] && setShot('f', e.target.files[0]);
+$('#bIn').onchange = e => e.target.files[0] && setShot('b', e.target.files[0]);
+const tOut = (t, bad) => { $('#tOut').textContent = t; $('#tOut').className = bad ? 'bad' : ''; };
+
+async function openSell(x) {
+  selling = x; sellImgs = {};
+  $('#sTitle').textContent = `Sell ${x.name} · ${x.num}`;
+  setShot('f', photos[x.key] || x.img.replace('/low.webp', '/high.webp'));
+  setShot('b', null); tOut('');
+  $('#tTitle').value = `Pokémon ${x.name}`; $('#tDesc').value = 'Getting card details…';
+  $('#cmInfo').textContent = `Cardmarket trend: ${eur(x.eur)}. On Cardmarket, find the card, then tap Sell.`;
+  $('#sell').showModal();
+  const t = listingText(x, await cardInfo(x).catch(() => ({})));
+  if (selling !== x) return;
+  $('#tTitle').value = t.title; $('#tDesc').value = t.desc;
+  const st = await posterStatus();
+  $('#trFields').hidden = !st?.loggedIn;
+  $('#trState').innerHTML = !st ? 'To post on Tradera, run <b>python poster.py</b> on your PC and use the page it opens.'
+    : !st.loggedIn ? '<a href="/api/login">Log in to Tradera</a>, then open Sell again.' : '';
+  if (!st?.loggedIn) return;
+  try {
+    const list = await pokemonCats(), keep = localStorage.getItem('trCat');
+    $('#tCat').innerHTML = list.map(c => `<option value="${c.id}" ${c.id == keep ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    await catChanged();
+  } catch (e) { tOut(e.message, true); }
+}
+
+async function catChanged() {
+  const x = selling, cat = $('#tCat').value;
+  try { localStorage.setItem('trCat', cat); } catch {}
+  const defs = await tr(`categories/${cat}/attribute-definitions`);
+  $('#tAttrs').innerHTML = defs.filter(d => d.possibleTermValues?.length).map(d =>
+    `<label>${esc(d.name)} <select data-attr="${d.id}">${d.minNumberOfValues ? '' : '<option value="">–</option>'}
+    ${d.possibleTermValues.map(v => `<option>${esc(v)}</option>`).join('')}</select></label>`).join('');
+  shipFor[cat] ??= (await tr(`reference-data/shipping-options?fromCountryCodes=SE&categoryIds=${cat}`))
+    .productsPerWeightSpan.flatMap(s => s.products).sort((a, b) => a.weight - b.weight || a.price - b.price);
+  $('#tShip').innerHTML = shipFor[cat].map((p, i) =>
+    `<option value="${i}">${esc(p.shippingProvider)} ${esc(p.name)} · ${p.weight} kg · ${p.price} kr</option>`).join('');
+  const sek = x.eur != null ? x.eur * await getSek() : null;
+  let hint = sek != null ? `Cardmarket ${eur(x.eur)} ≈ ${Math.round(sek)} kr.` : '';
+  try {
+    const s = await tr(`pricing/suggestion?query=${encodeURIComponent(`${x.name} ${x.set}`.slice(0, 100))}&categoryId=${cat}`);
+    if (s.suggested) hint += ` Sold on Tradera: about ${s.suggested} kr (${s.low}–${s.high} kr).`;
+  } catch {}
+  $('#tHint').textContent = hint;
+  $('#tPrice').value = Math.max(1, Math.round(sek ?? 10));
+}
+$('#tCat').onchange = () => catChanged().catch(e => tOut(e.message, true));
+$('#tType').onchange = () => { if ($('#tType').value === '3' && +$('#tDays').value < 30) $('#tDays').value = 30; };
+
+async function jpeg64(src) {
+  const b = src instanceof Blob ? src : await (await fetch(src)).blob();
+  const im = await createImageBitmap(b), s = Math.min(1, 1600 / Math.max(im.width, im.height));
+  const c = document.createElement('canvas'); c.width = im.width * s | 0; c.height = im.height * s | 0;
+  c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+}
+
+async function postTradera(commit) {
+  const price = Math.round(+$('#tPrice').value), type = +$('#tType').value, ship = shipFor[$('#tCat').value]?.[$('#tShip').value];
+  if (!(price >= 1)) return tOut('Set a price of 1 kr or more.', true);
+  const body = {
+    title: $('#tTitle').value.trim(), description: $('#tDesc').value.trim(),
+    categoryId: +$('#tCat').value, itemType: type, duration: +$('#tDays').value, restarts: 0,
+    startPrice: price, ...(type === 3 && { buyItNowPrice: price }), autoCommit: false,
+    attributeValues: { terms: [...document.querySelectorAll('[data-attr]')].filter(s => s.value)
+      .map(s => ({ id: +s.dataset.attr, values: [s.value] })) },
+    ...(ship && { shippingOptions: [{ shippingProviderId: ship.shippingProviderId, shippingProductId: ship.id,
+      cost: ship.price, shippingWeight: ship.weight }] }),
+  };
+  $('#tCheck').disabled = $('#tPost').disabled = true;
+  try {
+    tOut(commit ? 'Sending to Tradera…' : 'Checking with Tradera…');
+    const q = await tr('listings/items', { method: 'POST', body: JSON.stringify(body) });
+    if (!commit) return tOut('✓ Tradera accepts this listing. Nothing is posted yet.');
+    for (const side of ['f', 'b']) if (sellImgs[side]) {
+      tOut(`Uploading ${side === 'f' ? 'front' : 'back'} photo…`);
+      await tr(`listings/items/${q.requestId}/images`, { method: 'POST',
+        body: JSON.stringify({ imageData: await jpeg64(sellImgs[side]), imageFormat: 1, hasMega: true }) });
+    }
+    await tr(`listings/items/${q.requestId}/commit`, { method: 'POST' });
+    for (let i = 0; i < 30; i++) {
+      await sleep(2000);
+      const r = (await tr(`listings/request-results?requestIds=${q.requestId}`))[0];
+      if (!r || r.resultCode === 128 || r.resultCode === 256) { tOut('Tradera is working on it…'); continue; }
+      if (r.resultCode === 1) return tOut(`✓ Posted on Tradera (item ${q.itemId}). See it under My Tradera › Selling.`);
+      return tOut(`Tradera said no (code ${r.resultCode}): ${r.message || ''}`, true);
+    }
+    tOut(`Sent (item ${q.itemId}). Tradera is slow. Check My Tradera in a few minutes.`);
+  } catch (e) { tOut(e.message, true); }
+  finally { $('#tCheck').disabled = $('#tPost').disabled = false; }
+}
+$('#tCheck').onclick = () => postTradera(false);
+$('#tPost').onclick = () => postTradera(true);
+
+$('#cmCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('#tDesc').value); $('#cmCopy').textContent = '✓ Copied'; }
+  catch { $('#cmCopy').textContent = 'Copy failed'; }
+};
+$('#cmOpen').onclick = () => open(`https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${encodeURIComponent(selling.name)}`, '_blank', 'noopener');
 
 // ---------- tabs ----------
 function tab(which) {
