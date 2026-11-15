@@ -536,8 +536,10 @@ $('#import').onchange = async e => {
 // ---------- sell: Tradera (through poster.py on a PC) and Cardmarket helper ----------
 let lastPhoto = null, selling = null, sellImgs = {}, sellInfo = {};
 const photos = {}; // scan photo per collection key, in memory only
+let vaultKey = new URLSearchParams(location.search).get('k'); // secret code from the poster.py link
+try { vaultKey ? localStorage.setItem('vaultKey', vaultKey) : vaultKey = localStorage.getItem('vaultKey'); } catch {}
 const tr = async (path, opt = {}) => {
-  const r = await fetch('/api/tradera/' + path, { ...opt, headers: { 'X-Vault': '1', 'Content-Type': 'application/json' } });
+  const r = await fetch('/api/tradera/' + path, { ...opt, headers: { 'X-Vault': vaultKey || '', 'Content-Type': 'application/json' } });
   const t = await r.text(); let d; try { d = JSON.parse(t); } catch { d = t; }
   if (!r.ok) throw new Error(`Tradera said ${r.status}: ${typeof d === 'string' ? d : JSON.stringify(d)}`.slice(0, 400));
   return d;
@@ -599,7 +601,7 @@ async function openSell(x) {
   const st = await posterStatus();
   $('#trFields').hidden = !st?.loggedIn;
   $('#trState').innerHTML = !st ? 'To post on Tradera, run <b>python poster.py</b> on your PC and use the page it opens.'
-    : !st.loggedIn ? '<a href="/api/login">Log in to Tradera</a>, then open Sell again.' : '';
+    : !st.loggedIn ? (location.hostname === 'localhost' ? '<a href="/api/login">Log in to Tradera</a>, then open Sell again.' : 'Log in to Tradera on your PC first (run poster.py there).') : '';
   if (!st?.loggedIn) return;
   try {
     const list = await pokemonCats(), keep = localStorage.getItem('trCat') || list.find(c => /singles/i.test(c.name))?.id;
@@ -688,7 +690,7 @@ $('#tPost').onclick = () => postTradera(true);
 
 $('#cmCopy').onclick = async () => {
   try { await navigator.clipboard.writeText($('#tDesc').value); $('#cmCopy').textContent = '✓ Copied'; }
-  catch { $('#cmCopy').textContent = 'Copy failed'; }
+  catch { $('#tDesc').select(); $('#cmCopy').textContent = 'Text selected. Copy it'; }
 };
 $('#cmOpen').onclick = () => open(`https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=${encodeURIComponent(selling.name)}`, '_blank', 'noopener');
 

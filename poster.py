@@ -3,7 +3,7 @@
 Run:  python poster.py
 Your Tradera keys and login are saved in tradera.json next to this file. Never share or commit it.
 """
-import json, os, sys, uuid, webbrowser, urllib.request, urllib.error, urllib.parse
+import json, os, sys, uuid, secrets, socket, hmac, webbrowser, urllib.request, urllib.error, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,11 +37,11 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         if u.path in ('/', '/index.html'):
             return self.send(200, open(os.path.join(HERE, 'index.html'), 'rb').read(), 'text/html; charset=utf-8')
-        if u.path == '/tradera-callback':  # Tradera sends the user back here after login
+        if u.path == '/tradera-callback' and self.client_address[0] == '127.0.0.1':  # Tradera login returns here (PC only)
             q = urllib.parse.parse_qs(u.query)
             if 'token' in q:
                 cfg.update(userId=int(q['userId'][0]), token=q['token'][0], exp=q.get('exp', [''])[0]); save()
-                msg = 'Logged in to Tradera. Close this tab and go back to Card Vault.'
+                msg = f'Logged in to Tradera. <a href="/?k={cfg["key"]}">Open Card Vault</a>'
             else: msg = 'Tradera login did not finish. Start poster.py again.'
             return self.send(200, f'<h2 style="font-family:sans-serif">{msg}</h2>'.encode(), 'text/html; charset=utf-8')
         if u.path == '/api/status':
@@ -55,9 +55,10 @@ class H(BaseHTTPRequestHandler):
 
     def proxy(self, method):
         u = urllib.parse.urlparse(self.path)
-        # The custom header forces a browser preflight, so other websites cannot call this proxy.
-        if not u.path.startswith('/api/tradera/') or self.headers.get('X-Vault') != '1':
-            return self.send(404, b'{}')
+        if not u.path.startswith('/api/tradera/'): return self.send(404, b'{}')
+        # Secret code from the link poster.py prints. Without it, nobody else on the Wi-Fi can post.
+        if not hmac.compare_digest(self.headers.get('X-Vault', ''), cfg['key']):
+            return self.send(403, b'{"error":"Wrong or missing code. Open the link that poster.py shows."}')
         n = int(self.headers.get('Content-Length') or 0)
         code, data = tradera(method, u.path[len('/api/tradera/'):] + (('?' + u.query) if u.query else ''),
                              self.rfile.read(n) if n else None)
@@ -78,9 +79,16 @@ if __name__ == '__main__':
         cfg['appKey'] = e.get('TRADERA_APP_KEY') or input('App key: ').strip()
         cfg['publicKey'] = input('Public key: ').strip()
         save()
-    srv = ThreadingHTTPServer(('127.0.0.1', PORT), H)
-    url = f'http://localhost:{PORT}/'
-    print(f'Card Vault poster runs at {url}  (keep this window open, Ctrl+C to stop)')
-    webbrowser.open(url if cfg.get('token') else f'{url}api/login')
+    if not cfg.get('key'): cfg['key'] = secrets.token_urlsafe(9); save()
+    try:  # this PC's address on the home Wi-Fi
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(('10.255.255.255', 1)); ip = s.getsockname()[0]
+    except OSError: ip = 'THIS-PC-IP'
+    srv = ThreadingHTTPServer(('0.0.0.0', PORT), H)
+    url = f'http://localhost:{PORT}/?k={cfg["key"]}'
+    print(f'Card Vault poster runs. Keep this window open, Ctrl+C to stop.')
+    print(f'  On this PC:          {url}')
+    print(f'  On your phone (same Wi-Fi):  http://{ip}:{PORT}/?k={cfg["key"]}')
+    print('If Windows asks about the firewall, allow Python on private networks.')
+    webbrowser.open(url if cfg.get('token') else f'http://localhost:{PORT}/api/login')
     try: srv.serve_forever()
     except KeyboardInterrupt: sys.exit(0)
