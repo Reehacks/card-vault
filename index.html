@@ -8,7 +8,6 @@
 <title>Card Vault</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&display=swap">
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <style>
 /* Layout: one column phone app, sticky header with two tabs, full-screen camera overlay */
 :root{
@@ -222,28 +221,50 @@ const findByName = t => lookup(() => dexByName(t), `name:"${t}*"`);
 // "025/165" -> {num:"025", total:"165"}; also "TG05/TG30", "SV049/SV122"
 function parseNum(text) {
   const m = text.toUpperCase().match(/([A-Z]{0,3}\d{1,3})\s*\/\s*([A-Z]{0,3}\d{2,3})/);
-  return m ? { num: m[1], total: m[2] } : null;
+  if (!m) return null;
+  // real prefixes are on both sides (TG05/TG30); a letter only on the left is the regulation mark ("D 044/185")
+  return { num: /^\d+$/.test(m[2]) ? m[1].replace(/^[A-Z]+/, '') : m[1], total: m[2] };
 }
 
 // ---------- OCR ----------
-let worker;
-async function getWorker() {
-  if (!worker) {
-    worker = await Tesseract.createWorker('eng');
-    await worker.setParameters({ tessedit_char_whitelist: '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ ' });
+// PaddleOCR (PP-OCRv6 tiny) reads small text far better than Tesseract and gives a score per line.
+// Tesseract stays as a fallback if PaddleOCR cannot load. reader(canvases) -> [{text, score}]
+let readerP = null;
+function loadReader() {
+  return readerP ??= (async () => {
+    try {
+      const { PaddleOCR } = await import('https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.4.2/+esm');
+      const o = await PaddleOCR.create({ textDetectionModelName: 'PP-OCRv6_tiny_det',
+        textRecognitionModelName: 'PP-OCRv6_tiny_rec', ortOptions: { backend: 'wasm' } });
+      return async imgs => (await o.predict(imgs)).flatMap(r => r.items);
+    } catch (e) {
+      console.warn('PaddleOCR failed, using Tesseract', e);
+      await new Promise((ok, bad) => document.head.append(Object.assign(document.createElement('script'),
+        { src: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js', onload: ok, onerror: bad })));
+      const w = await Tesseract.createWorker('eng');
+      return async imgs => { const out = [];
+        for (const i of imgs) for (const l of (await w.recognize(i)).data.lines) out.push({ text: l.text, score: l.confidence / 100 });
+        return out; };
+    }
+  })().catch(e => { readerP = null; throw e; });
+}
+// The number sits in a bottom corner: left on modern cards, right on old ones. Read only those two corners.
+async function readCorners(src, sx, sy, sw, sh, minScore = 0.9) {
+  const cw = sw * 0.5, scale = Math.min(2.5, 700 / cw);
+  const crops = [sx, sx + sw - cw].map(x => {
+    const c = document.createElement('canvas');
+    c.width = cw * scale; c.height = sh * scale;
+    c.getContext('2d').drawImage(src, x, sy, cw, sh, 0, 0, c.width, c.height);
+    return c;
+  });
+  const read = await loadReader();
+  for (const line of await read(crops)) {
+    const p = line.score >= minScore && parseNum(line.text);
+    if (p) return p;
   }
-  return worker;
+  return null;
 }
-// crop a region, make it big and high-contrast, read text
-async function readRegion(src, sx, sy, sw, sh) {
-  const scale = Math.min(3, 1800 / sw);
-  const c = document.createElement('canvas');
-  c.width = sw * scale; c.height = sh * scale;
-  const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.8)';
-  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
-  return (await (await getWorker()).recognize(c)).data.text;
-}
+loadReader().catch(() => {}); // start the download now, so the first scan is fast
 
 // ---------- live camera scan ----------
 let stream = null, scanning = false;
@@ -278,19 +299,17 @@ async function startCam() {
   $('#results').innerHTML = ''; $('#preview').hidden = true; status('');
   await v.play().catch(() => {});
   scanning = true;
-  camStatus('Getting ready…');
-  await getWorker();
-  let last = null;
+  camStatus('Loading the reader (slow only the first time)…');
+  try { await loadReader(); } catch { stopCam(); return status('Could not load the reader. Check your internet and try again.'); }
   const misses = new Set();
   camStatus('Put the card in the frame. Number in the yellow part.');
   while (scanning) {
     const r = stripRect();
     if (!r) { await sleep(200); continue; }
-    const p = parseNum(await readRegion(v, ...r));
+    const p = await readCorners(v, ...r);
     if (!scanning) break;
     const k = p && `${p.num}/${p.total}`;
-    if (!k || misses.has(k)) { last = null; await sleep(100); continue; }
-    if (k !== last) { last = k; camStatus(`Reading ${k}…`); continue; } // need the same number twice in a row
+    if (!k || misses.has(k)) { await sleep(50); continue; }
     camStatus(`Found ${k}. Getting price…`);
     $('#guide').classList.add('hit');
     try {
@@ -300,7 +319,6 @@ async function startCam() {
       misses.add(k); camStatus(`No card ${k}. Keep holding still…`);
     } catch (e) { camStatus(e.message); await sleep(1500); }
     $('#guide').classList.remove('hit');
-    last = null;
   }
 }
 function stopCam() {
@@ -323,9 +341,9 @@ $('#photo').onchange = async e => {
   try {
     const img = await createImageBitmap(f);
     status('Reading the card number…');
-    const h = Math.round(img.height * 0.15);
-    let p = parseNum(await readRegion(img, 0, img.height - h, img.width, h));
-    if (!p) { status('Looking harder…'); p = parseNum(await readRegion(img, 0, 0, img.width, img.height)); }
+    const h = Math.round(img.height * 0.2);
+    let p = await readCorners(img, 0, img.height - h, img.width, h, 0.7);
+    if (!p) { status('Looking harder…'); p = await readCorners(img, 0, 0, img.width, img.height, 0.7); }
     if (!p) return status('Could not read the number. Try again, or type it below.');
     $('#q').value = `${p.num}/${p.total}`;
     status(`Found ${p.num}/${p.total}. Getting price…`);
