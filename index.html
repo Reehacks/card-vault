@@ -155,6 +155,7 @@ a{color:var(--accent)}
           <label>Days <input id="tDays" type="number" min="1" value="7" inputmode="numeric"></label>
         </div>
         <p class="meta" id="tHint"></p>
+        <label>Buyers <select id="tBidder"><option value="1">Sweden only</option><option value="4">EU</option><option value="3">Whole world</option></select></label>
         <label>Shipping <select id="tShip"></select></label>
         <div class="row">
           <button type="button" class="btn small ghost" id="tCheck">Check only</button>
@@ -695,7 +696,7 @@ async function postTradera(commit) {
   if (!(price >= 1)) return tOut('Set a price of 1 kr or more.', true);
   const body = {
     title: $('#tTitle').value.trim(), description: $('#tDesc').value.trim(),
-    categoryId: +$('#tCat').value, itemType: type, duration: +$('#tDays').value, restarts: 0,
+    categoryId: +$('#tCat').value, itemType: type, duration: +$('#tDays').value, restarts: 0, acceptedBidderId: +$('#tBidder').value,
     startPrice: price, ...(type === 3 && { buyItNowPrice: price }), autoCommit: false,
     attributeValues: { terms: [...document.querySelectorAll('[data-attr]')].filter(s => s.value)
       .map(s => ({ id: +s.dataset.attr, values: [s.value] })) },
