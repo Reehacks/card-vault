@@ -136,6 +136,7 @@ a{color:var(--accent)}
 <dialog id="sell">
   <form onsubmit="return false">
     <h3 id="sTitle"></h3>
+    <label id="copyRow" hidden>Which copy <select id="tCopy"></select></label>
     <div class="shots">
       <label>Front <img id="fImg" alt=""><input id="fIn" type="file" accept="image/*" capture="environment"></label>
       <label>Back <img id="bImg" alt=""><input id="bIn" type="file" accept="image/*" capture="environment"></label>
@@ -466,7 +467,7 @@ function renderCol() {
   $('#list').innerHTML = sorted.length ? sorted.map(x => `<div class="item"><img src="${esc(x.img)}" alt="" loading="lazy">
     <div><h3>${esc(x.name)}</h3>
     <div class="meta">${esc(x.set)} · ${esc(x.num)} · ${esc(pretty(x.variant))}</div>
-    <div><span class="price">${usd(x.usd)}</span> <span class="eur">· ${eur(x.eur)}</span></div>
+    <div><span class="price">${usd(x.usd)}</span> <span class="eur">· ${eur(x.eur)}</span>${x.posted ? ` <span class="eur">· ${Object.keys(x.posted).length} posted</span>` : ''}</div>
     <div class="qty"><button data-k="${esc(x.key)}" data-d="-1" aria-label="One less">−</button>
       <span class="price">×${x.qty}</span>
       <button data-k="${esc(x.key)}" data-d="1" aria-label="One more">+</button>
@@ -534,7 +535,8 @@ $('#import').onchange = async e => {
 };
 
 // ---------- sell: Tradera (through poster.py on a PC) and Cardmarket helper ----------
-let lastPhoto = null, selling = null, sellImgs = {}, sellInfo = {};
+let lastPhoto = null, selling = null, sellImgs = {}, sellInfo = {}, copyN = 1;
+const sellKey = () => `${selling.key}#${copyN}`; // photos are kept per copy
 const photos = {}; // scan photo per collection key, in memory only
 let vaultKey = new URLSearchParams(location.search).get('k'); // secret code from the poster.py link
 try { vaultKey ? localStorage.setItem('vaultKey', vaultKey) : vaultKey = localStorage.getItem('vaultKey'); } catch {}
@@ -587,18 +589,37 @@ const setShot = (side, src) => {
   if (src) im.src = src instanceof Blob ? URL.createObjectURL(src) : src; else im.removeAttribute('src');
 };
 for (const side of ['f', 'b']) $(`#${side}In`).onchange = async e => {
-  const f = e.target.files[0], x = selling; e.target.value = ''; if (!f || !x) return;
-  const b = await shrink(f); setShot(side, b);
-  shots('readwrite', st => st.put({ ...sellImgs }, x.key)).catch(() => {});
+  const f = e.target.files[0], k = selling && sellKey(); e.target.value = ''; if (!f || !k) return;
+  const b = await shrink(f), cur = k === sellKey(); // the picker may have moved to another copy meanwhile
+  const prev = cur ? sellImgs : await shots('readonly', st => st.get(k)).catch(() => null) || {};
+  if (cur) setShot(side, b);
+  shots('readwrite', st => st.put({ ...prev, [side]: b }, k)).catch(() => {});
 };
+async function loadShots() {
+  const x = selling, k = sellKey();
+  const saved = await shots('readonly', st => st.get(k)).catch(() => null) || {};
+  if (k !== sellKey()) return;
+  setShot('f', saved.f || (copyN === 1 && photos[x.key]) || x.img.replace('/low.webp', '/high.webp'));
+  setShot('b', saved.b || null);
+  const id = x.posted?.[copyN];
+  tOut(id ? `This copy is already posted (item ${id}).` : '');
+  $('#tPost').textContent = id ? 'Post again on Tradera' : 'Post on Tradera';
+}
+function fillCopies() {
+  const x = selling;
+  $('#copyRow').hidden = x.qty < 2;
+  $('#tCopy').innerHTML = Array.from({ length: x.qty }, (_, i) =>
+    `<option value="${i + 1}">Copy ${i + 1} of ${x.qty}${x.posted?.[i + 1] ? ' · Posted' : ''}</option>`).join('');
+  $('#tCopy').value = copyN;
+}
+$('#tCopy').onchange = () => { copyN = +$('#tCopy').value; loadShots(); };
 const tOut = (t, bad) => { $('#tOut').textContent = t; $('#tOut').className = bad ? 'bad' : ''; };
 
 async function openSell(x) {
   selling = x; sellImgs = {}; priceTouched = false;
+  copyN = Array.from({ length: x.qty }, (_, i) => i + 1).find(n => !x.posted?.[n]) || 1; // first copy not posted yet
   $('#sTitle').textContent = `Sell ${x.name} · ${x.num}`;
-  const saved = await shots('readonly', st => st.get(x.key)).catch(() => null) || {};
-  setShot('f', saved.f || photos[x.key] || x.img.replace('/low.webp', '/high.webp'));
-  setShot('b', saved.b || null); tOut('');
+  fillCopies(); await loadShots();
   $('#tTitle').value = `Pokémon ${x.name}`; $('#tDesc').value = 'Getting card details…';
   $('#cmInfo').textContent = `Cardmarket trend: ${eur(x.eur)}. On Cardmarket, find the card, then tap Sell.`;
   $('#sell').showModal();
@@ -669,6 +690,7 @@ async function jpeg64(src) {
 }
 
 async function postTradera(commit) {
+  const x = selling, n = copyN, imgs = { ...sellImgs }; // the copy being posted, even if the picker changes meanwhile
   const price = Math.round(+$('#tPrice').value), type = +$('#tType').value, ship = shipFor[$('#tCat').value]?.[$('#tShip').value];
   if (!(price >= 1)) return tOut('Set a price of 1 kr or more.', true);
   const body = {
@@ -685,17 +707,21 @@ async function postTradera(commit) {
     tOut(commit ? 'Sending to Tradera…' : 'Checking with Tradera…');
     const q = await tr('listings/items', { method: 'POST', body: JSON.stringify(body) });
     if (!commit) return tOut('✓ Tradera accepts this listing. Nothing is posted yet.');
-    for (const side of ['f', 'b']) if (sellImgs[side]) {
+    for (const side of ['f', 'b']) if (imgs[side]) {
       tOut(`Uploading ${side === 'f' ? 'front' : 'back'} photo…`);
       await tr(`listings/items/${q.requestId}/images`, { method: 'POST',
-        body: JSON.stringify({ imageData: await jpeg64(sellImgs[side]), imageFormat: 1, hasMega: true }) });
+        body: JSON.stringify({ imageData: await jpeg64(imgs[side]), imageFormat: 1, hasMega: true }) });
     }
     await tr(`listings/items/${q.requestId}/commit`, { method: 'POST' });
     for (let i = 0; i < 30; i++) {
       await sleep(2000);
       const r = (await tr(`listings/request-results?requestIds=${q.requestId}`))[0];
       if (!r || r.resultCode === 128 || r.resultCode === 256) { tOut('Tradera is working on it…'); continue; }
-      if (r.resultCode === 1) return tOut(`✓ Posted on Tradera (item ${q.itemId}). See it under My Tradera › Selling.`);
+      if (r.resultCode === 1) {
+        (x.posted ||= {})[n] = q.itemId; save(); if (selling === x) fillCopies();
+        if (copyN === n) $('#tPost').textContent = 'Post again on Tradera';
+        return tOut(`✓ Copy ${n} posted on Tradera (item ${q.itemId}). See it under My Tradera › Selling.`);
+      }
       return tOut(`Tradera said no (code ${r.resultCode}): ${r.message || ''}`, true);
     }
     tOut(`Sent (item ${q.itemId}). Tradera is slow. Check My Tradera in a few minutes.`);
