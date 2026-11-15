@@ -70,8 +70,12 @@ if __name__ == '__main__':
         print('First time setup. Get these from https://api.tradera.com (your application page).')
         print(f'In the app settings, set Accept URL to  http://localhost:{PORT}/tradera-callback')
         print('and turn ON "Display token on return URL".\n')
-        cfg['appId'] = int(input('App ID: ').strip())
-        cfg['appKey'] = input('App key: ').strip()
+        # Reuse the keys of the TraderaBlocketBot (Fyndbot) if its .env is there
+        env = os.path.expanduser('~/Documents/TraderaBlocketBot/.env')
+        e = dict(l.strip().split('=', 1) for l in open(env, encoding='utf8') if '=' in l) if os.path.exists(env) else {}
+        if e.get('TRADERA_APP_ID'): print(f'Using App ID and App key from {env}')
+        cfg['appId'] = int(e.get('TRADERA_APP_ID') or input('App ID: ').strip())
+        cfg['appKey'] = e.get('TRADERA_APP_KEY') or input('App key: ').strip()
         cfg['publicKey'] = input('Public key: ').strip()
         save()
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), H)

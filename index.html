@@ -534,7 +534,7 @@ $('#import').onchange = async e => {
 };
 
 // ---------- sell: Tradera (through poster.py on a PC) and Cardmarket helper ----------
-let lastPhoto = null, selling = null, sellImgs = {};
+let lastPhoto = null, selling = null, sellImgs = {}, sellInfo = {};
 const photos = {}; // scan photo per collection key, in memory only
 const tr = async (path, opt = {}) => {
   const r = await fetch('/api/tradera/' + path, { ...opt, headers: { 'X-Vault': '1', 'Content-Type': 'application/json' } });
@@ -564,9 +564,9 @@ async function cardInfo(x) {
   const c = (await getJSON(`${PTCG}/${encodeURIComponent(x.id)}`))?.data;
   return { rarity: c?.rarity, serie: c?.set?.series, year: c?.set?.releaseDate?.slice(0, 4), local: c?.number };
 }
+const bare = s => s.toLowerCase().replace(/and|[^a-z0-9]/g, '');
 function listingText(x, i) {
   const no = String(i.local ?? x.num.split('/')[0]).replace(/^0+(?=\d)/, '');
-  const bare = s => s.toLowerCase().replace(/and|[^a-z]/g, '');
   const set = x.set + (i.serie && bare(i.serie) !== bare(x.set) ? ' - ' + i.serie : '');
   return {
     title: `Pokémon ${x.name} #${no} ${x.set}${i.year ? ' ' + i.year : ''}`.slice(0, 80),
@@ -592,7 +592,8 @@ async function openSell(x) {
   $('#tTitle').value = `Pokémon ${x.name}`; $('#tDesc').value = 'Getting card details…';
   $('#cmInfo').textContent = `Cardmarket trend: ${eur(x.eur)}. On Cardmarket, find the card, then tap Sell.`;
   $('#sell').showModal();
-  const t = listingText(x, await cardInfo(x).catch(() => ({})));
+  sellInfo = await cardInfo(x).catch(() => ({}));
+  const t = listingText(x, sellInfo);
   if (selling !== x) return;
   $('#tTitle').value = t.title; $('#tDesc').value = t.desc;
   const st = await posterStatus();
@@ -601,7 +602,7 @@ async function openSell(x) {
     : !st.loggedIn ? '<a href="/api/login">Log in to Tradera</a>, then open Sell again.' : '';
   if (!st?.loggedIn) return;
   try {
-    const list = await pokemonCats(), keep = localStorage.getItem('trCat');
+    const list = await pokemonCats(), keep = localStorage.getItem('trCat') || list.find(c => /singles/i.test(c.name))?.id;
     $('#tCat').innerHTML = list.map(c => `<option value="${c.id}" ${c.id == keep ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
     await catChanged();
   } catch (e) { tOut(e.message, true); }
@@ -614,18 +615,28 @@ async function catChanged() {
   $('#tAttrs').innerHTML = defs.filter(d => d.possibleTermValues?.length).map(d =>
     `<label>${esc(d.name)} <select data-attr="${d.id}">${d.minNumberOfValues ? '' : '<option value="">–</option>'}
     ${d.possibleTermValues.map(v => `<option>${esc(v)}</option>`).join('')}</select></label>`).join('');
-  shipFor[cat] ??= (await tr(`reference-data/shipping-options?fromCountryCodes=SE&categoryIds=${cat}`))
-    .productsPerWeightSpan.flatMap(s => s.products).sort((a, b) => a.weight - b.weight || a.price - b.price);
+  // pre-fill: set name, language, condition, then era by series name or release year
+  const i = sellInfo || {}, want = [x.set, 'Engelska', 'Mycket gott skick'].map(bare);
+  for (const s of document.querySelectorAll('[data-attr]')) {
+    const opts = [...s.options].map(o => o.value).filter(Boolean);
+    const hit = opts.find(v => want.includes(bare(v)))
+      || (i.serie && opts.find(v => bare(v).startsWith(bare(i.serie))))
+      || (i.year && opts.find(v => { const m = v.match(/(\d{4})(?:-(\d{4}))?$/); return m && +i.year >= +m[1] && +i.year <= +(m[2] || m[1]); }));
+    if (hit) s.value = hit;
+  }
+  shipFor[cat] ??= [...new Map((await tr(`reference-data/shipping-options?fromCountryCodes=SE&categoryIds=${cat}`))
+    .productsPerWeightSpan.flatMap(s => s.products).filter(p => p.name && p.weight > 0).map(p => [`${p.shippingProviderId}:${p.id}`, p])).values()]
+    .sort((a, b) => a.weight - b.weight || a.price - b.price);
   $('#tShip').innerHTML = shipFor[cat].map((p, i) =>
     `<option value="${i}">${esc(p.shippingProvider)} ${esc(p.name)} · ${p.weight} kg · ${p.price} kr</option>`).join('');
   const sek = x.eur != null ? x.eur * await getSek() : null;
-  let hint = sek != null ? `Cardmarket ${eur(x.eur)} ≈ ${Math.round(sek)} kr.` : '';
+  let hint = sek != null ? `Cardmarket ${eur(x.eur)} ≈ ${Math.round(sek)} kr.` : '', sold;
   try {
     const s = await tr(`pricing/suggestion?query=${encodeURIComponent(`${x.name} ${x.set}`.slice(0, 100))}&categoryId=${cat}`);
-    if (s.suggested) hint += ` Sold on Tradera: about ${s.suggested} kr (${s.low}–${s.high} kr).`;
+    if (s.suggested) { sold = s.suggested; hint += ` Sold on Tradera: about ${s.suggested} kr (${s.low}–${s.high} kr).`; }
   } catch {}
   $('#tHint').textContent = hint;
-  $('#tPrice').value = Math.max(1, Math.round(sek ?? 10));
+  $('#tPrice').value = Math.max(1, Math.round(sold ?? sek ?? 10));
 }
 $('#tCat').onchange = () => catChanged().catch(e => tOut(e.message, true));
 $('#tType').onchange = () => { if ($('#tType').value === '3' && +$('#tDays').value < 30) $('#tDays').value = 30; };
