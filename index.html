@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <style>
-/* Layout: one column phone app, sticky header with two tabs, bottom-safe padding */
+/* Layout: one column phone app, sticky header with two tabs, full-screen camera overlay */
 :root{
   --bg:#f3f4f8; --card:#ffffff; --fg:#1b1f33; --muted:#646a85; --line:#dfe2ec;
   --accent:#2f5bd3; --accent-fg:#fff; --gold:#b8860b; --bad:#c0392b;
@@ -40,14 +40,15 @@ main{padding:16px max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-a
   border:0;border-radius:12px;font:600 16px var(--body);padding:14px;cursor:pointer;width:100%}
 .btn.ghost{background:var(--card);color:var(--fg);border:1px solid var(--line)}
 .btn.small{width:auto;padding:8px 12px;font-size:14px;border-radius:9px}
-button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.link{background:none;border:0;color:var(--accent);font:600 14px var(--body);cursor:pointer;text-align:center;padding:4px}
+button:focus-visible,input:focus-visible,label:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .row{display:flex;gap:8px}
 .row>*{flex:1;min-width:0}
 input[type=search]{width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);
   background:var(--card);color:var(--fg);font:15px var(--body)}
 #preview{max-height:220px;border-radius:12px;display:block;margin:0 auto}
 #status{color:var(--muted);text-align:center;min-height:1.4em;margin:0}
-.hint{color:var(--muted);font-size:13px;margin:0}
+.hint{color:var(--muted);font-size:13px;margin:0;text-align:center}
 .item{display:grid;grid-template-columns:64px 1fr;gap:12px;background:var(--card);
   border:1px solid var(--line);border-radius:14px;padding:10px}
 .item img{width:64px;border-radius:5px}
@@ -65,6 +66,19 @@ input[type=search]{width:100%;padding:12px;border-radius:12px;border:1px solid v
 .qty .del{width:auto;padding:0 10px;font-size:13px;color:var(--bad);margin-left:auto}
 .empty{text-align:center;color:var(--muted);padding:32px 8px}
 a{color:var(--accent)}
+/* camera overlay: always dark, it shows a live camera */
+#cam{position:fixed;inset:0;z-index:20;background:#000;overflow:hidden}
+#video{width:100%;height:100%;object-fit:cover;display:block}
+#guide{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);
+  width:min(74vw,50vh);aspect-ratio:63/88;border:3px solid #fff;border-radius:16px;
+  box-shadow:0 0 0 100vmax rgba(0,0,0,.5)}
+#guide::after{content:"";position:absolute;left:-3px;right:-3px;bottom:-3px;height:20%;
+  border:3px dashed #ffd84a;border-radius:0 0 16px 16px}
+#guide.hit{border-color:#5be07a}
+#camStatus{position:absolute;left:16px;right:16px;bottom:calc(96px + env(safe-area-inset-bottom,0px));
+  margin:0;color:#fff;text-align:center;font:600 16px var(--body);text-shadow:0 1px 3px #000}
+#camClose{position:absolute;left:50%;transform:translateX(-50%);width:auto;padding:12px 28px;
+  bottom:calc(28px + env(safe-area-inset-bottom,0px));background:#fff;color:#111;border:0}
 </style>
 </head>
 <body>
@@ -77,9 +91,9 @@ a{color:var(--accent)}
 </header>
 
 <main id="view-scan">
-  <label class="btn" for="photo">📷 Scan a card</label>
+  <button class="btn" id="scan">📷 Scan a card</button>
+  <label class="link" for="photo">Use a photo instead</label>
   <input id="photo" type="file" accept="image/*" capture="environment" hidden>
-  <p class="hint">Fill the photo with the card. Good light, no glare on the number at the bottom.</p>
   <img id="preview" alt="" hidden>
   <p id="status" aria-live="polite"></p>
   <form id="search" class="row">
@@ -103,15 +117,25 @@ a{color:var(--accent)}
   <div id="list" style="display:grid;gap:10px"></div>
 </main>
 
+<div id="cam" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <div id="guide"></div>
+  <p id="camStatus" aria-live="polite"></p>
+  <button id="camClose" class="btn">Cancel</button>
+</div>
+
 <script>
-const API = 'https://api.pokemontcg.io/v2/cards';
-const FIELDS = 'id,name,number,set,images,tcgplayer,cardmarket';
+// Two free price sources. TCGdex first (fresh prices, stable), pokemontcg.io as backup.
+const DEX = 'https://api.tcgdex.net/v2/en';
+const PTCG = 'https://api.pokemontcg.io/v2/cards';
+const PTCG_FIELDS = 'id,name,number,set,images,tcgplayer,cardmarket';
 const $ = s => document.querySelector(s);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const usd = n => n == null ? '–' : '$' + n.toFixed(2);
 const eur = n => n == null ? '–' : '€' + n.toFixed(2);
-const pretty = k => k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()).replace('1st', '1st ');
-const cardNo = c => c.set.printedTotal ? `${c.number}/${c.set.printedTotal}` : c.number;
+const pretty = k => k.replace(/-/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const strip0 = n => /^\d+$/.test(n) ? String(+n) : n;
 
 // ---------- storage (on this phone) ----------
 let col = [];
@@ -121,50 +145,176 @@ function save() {
   renderCol();
 }
 
+// ---------- network: timeout + retry, 404 = null ----------
+async function getJSON(url, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) return await r.json();
+      if (r.status === 404) return null;
+      if (r.status < 500 && r.status !== 429) throw new Error('HTTP ' + r.status);
+    } catch (e) { if (String(e.message).startsWith('HTTP')) throw e; }
+    if (i < tries - 1) await sleep(800 * (i + 1));
+  }
+  throw new Error('no answer from ' + new URL(url).host);
+}
+
+// ---------- both sources -> one card shape ----------
+// {src, id, name, set, no, img, variants:[{v, usd, eur}]}
+function fromDex(c) {
+  const tp = c.pricing?.tcgplayer || {}, cm = c.pricing?.cardmarket || {};
+  const eurFor = k => (/reverse/.test(k) ? cm['trend-holo'] : cm.trend) || cm.avg || null;
+  const keys = Object.keys(tp).filter(k => tp[k] && typeof tp[k] === 'object');
+  return { src: 'dex', id: c.id, name: c.name, set: c.set.name,
+    no: c.set.cardCount?.official ? `${c.localId}/${c.set.cardCount.official}` : c.localId,
+    img: c.image ? c.image + '/low.webp' : '',
+    variants: keys.length
+      ? keys.map(k => ({ v: k, usd: tp[k].marketPrice ?? tp[k].midPrice ?? null, eur: eurFor(k) }))
+      : [{ v: 'normal', usd: null, eur: eurFor('normal') }] };
+}
+function fromPtcg(c) {
+  const tp = c.tcgplayer?.prices || {}, cm = c.cardmarket?.prices || {};
+  const eurFor = k => (/reverse/i.test(k) ? cm.reverseHoloTrend : cm.trendPrice) || null;
+  const keys = Object.keys(tp);
+  return { src: 'ptcg', id: c.id, name: c.name, set: c.set.name,
+    no: c.set.printedTotal ? `${c.number}/${c.set.printedTotal}` : c.number,
+    img: c.images.small,
+    variants: keys.length
+      ? keys.map(k => ({ v: k, usd: tp[k].market ?? tp[k].mid ?? null, eur: eurFor(k) }))
+      : [{ v: 'normal', usd: null, eur: eurFor('normal') }] };
+}
+
+const dexFull = async ids => (await Promise.all(ids.map(id => getJSON(`${DEX}/cards/${encodeURIComponent(id)}`).catch(() => null))))
+  .filter(Boolean).map(fromDex);
+const ptcgSearch = async (q, size = 30) =>
+  (await getJSON(`${PTCG}?q=${encodeURIComponent(q)}&pageSize=${size}&orderBy=-set.releaseDate&select=${PTCG_FIELDS}`)).data.map(fromPtcg);
+
+async function dexByNum(p) {
+  if (/^\d+$/.test(p.num) && /^\d+$/.test(p.total)) {
+    const sets = await getJSON(`${DEX}/sets?cardCount.official=eq:${+p.total}`) || [];
+    const cards = await Promise.all(sets.map(s => getJSON(`${DEX}/sets/${s.id}/${strip0(p.num)}`).catch(() => null)));
+    return cards.filter(Boolean).map(fromDex);
+  }
+  const brief = await getJSON(`${DEX}/cards?localId=eq:${encodeURIComponent(p.num)}`) || [];
+  return dexFull(brief.slice(0, 12).map(c => c.id));
+}
+async function dexByName(t) {
+  const brief = await getJSON(`${DEX}/cards?name=${encodeURIComponent(t)}&pagination:itemsPerPage=12`) || [];
+  return dexFull(brief.map(c => c.id));
+}
+function ptcgNumQuery(p) {
+  let q = `number:"${strip0(p.num)}"`;
+  if (/^\d+$/.test(p.total)) q += ` set.printedTotal:${+p.total}`;
+  return q;
+}
+
+// Try TCGdex; if it fails or finds nothing, try pokemontcg.io.
+async function lookup(dexFn, ptcgQ) {
+  let dexErr;
+  try { const r = await dexFn(); if (r.length) return r; } catch (e) { dexErr = e; }
+  try { return await ptcgSearch(ptcgQ); }
+  catch (e) { if (dexErr) throw new Error('Both price sites are not answering. Try again in a minute.'); return []; }
+}
+const findByNum = p => lookup(() => dexByNum(p), ptcgNumQuery(p));
+const findByName = t => lookup(() => dexByName(t), `name:"${t}*"`);
+
 // ---------- card number parsing ----------
 // "025/165" -> {num:"025", total:"165"}; also "TG05/TG30", "SV049/SV122"
 function parseNum(text) {
   const m = text.toUpperCase().match(/([A-Z]{0,3}\d{1,3})\s*\/\s*([A-Z]{0,3}\d{2,3})/);
   return m ? { num: m[1], total: m[2] } : null;
 }
-function numQuery(p, withTotal = true) {
-  const n = /^\d+$/.test(p.num) ? String(+p.num) : p.num;
-  let q = `number:"${n}"`;
-  if (withTotal && /^\d+$/.test(p.total)) q += ` set.printedTotal:${+p.total}`;
-  return q;
-}
 
-// The price site often fails at random (5xx, sometimes without CORS headers = "Failed to fetch"), so retry.
-async function api(q, size = 30) {
-  const url = `${API}?q=${encodeURIComponent(q)}&pageSize=${size}&orderBy=-set.releaseDate&select=${FIELDS}`;
-  for (let i = 0; i < 4; i++) {
-    try {
-      const r = await fetch(url);
-      if (r.ok) return (await r.json()).data;
-      if (r.status < 500) throw new Error('Price site answered ' + r.status);
-    } catch (e) { if (e.message.startsWith('Price site')) throw e; }
-    await new Promise(s => setTimeout(s, 1000 * (i + 1)));
-  }
-  throw new Error('Price site is not answering. Try again in a minute.');
-}
-
-// ---------- scan ----------
+// ---------- OCR ----------
 let worker;
-async function ocr(img, bottomOnly) {
-  const cropH = bottomOnly ? Math.round(img.height * 0.15) : img.height;
-  const scale = Math.min(2, 2400 / img.width);
-  const c = document.createElement('canvas');
-  c.width = img.width * scale; c.height = cropH * scale;
-  const ctx = c.getContext('2d');
-  ctx.filter = 'grayscale(1) contrast(1.8)';
-  ctx.drawImage(img, 0, img.height - cropH, img.width, cropH, 0, 0, c.width, c.height);
+async function getWorker() {
   if (!worker) {
     worker = await Tesseract.createWorker('eng');
     await worker.setParameters({ tessedit_char_whitelist: '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ ' });
   }
-  return (await worker.recognize(c)).data.text;
+  return worker;
+}
+// crop a region, make it big and high-contrast, read text
+async function readRegion(src, sx, sy, sw, sh) {
+  const scale = Math.min(3, 1800 / sw);
+  const c = document.createElement('canvas');
+  c.width = sw * scale; c.height = sh * scale;
+  const ctx = c.getContext('2d');
+  ctx.filter = 'grayscale(1) contrast(1.8)';
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return (await (await getWorker()).recognize(c)).data.text;
 }
 
+// ---------- live camera scan ----------
+let stream = null, scanning = false;
+const camStatus = t => $('#camStatus').textContent = t;
+
+// bottom part of the on-screen frame, mapped to video pixels (video uses object-fit: cover)
+function stripRect() {
+  const v = $('#video'), e = v.getBoundingClientRect(), g = $('#guide').getBoundingClientRect();
+  const vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw) return null;
+  const s = Math.max(e.width / vw, e.height / vh);
+  const dx = (e.width - vw * s) / 2, dy = (e.height - vh * s) / 2;
+  // generous margins: people never line the card up exactly
+  const x0 = Math.max(0, (g.left - g.width * 0.12 - e.left - dx) / s);
+  const x1 = Math.min(vw, (g.right + g.width * 0.12 - e.left - dx) / s);
+  const y0 = Math.max(0, (g.bottom - g.height * 0.25 - e.top - dy) / s);
+  const y1 = Math.min(vh, (g.bottom + g.height * 0.12 - e.top - dy) / s);
+  return [x0, y0, x1 - x0, y1 - y0];
+}
+
+async function startCam() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
+  } catch {
+    return status('Camera not allowed. Allow camera for this site, or tap "Use a photo instead".');
+  }
+  try { await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch {}
+  const v = $('#video');
+  v.srcObject = stream;
+  $('#cam').hidden = false; $('#guide').classList.remove('hit');
+  $('#results').innerHTML = ''; $('#preview').hidden = true; status('');
+  await v.play().catch(() => {});
+  scanning = true;
+  camStatus('Getting ready…');
+  await getWorker();
+  let last = null;
+  const misses = new Set();
+  camStatus('Put the card in the frame. Number in the yellow part.');
+  while (scanning) {
+    const r = stripRect();
+    if (!r) { await sleep(200); continue; }
+    const p = parseNum(await readRegion(v, ...r));
+    if (!scanning) break;
+    const k = p && `${p.num}/${p.total}`;
+    if (!k || misses.has(k)) { last = null; await sleep(100); continue; }
+    if (k !== last) { last = k; camStatus(`Reading ${k}…`); continue; } // need the same number twice in a row
+    camStatus(`Found ${k}. Getting price…`);
+    $('#guide').classList.add('hit');
+    try {
+      const cards = await findByNum(p);
+      if (!scanning) break;
+      if (cards.length) { stopCam(); $('#q').value = k; showResults(cards); return; }
+      misses.add(k); camStatus(`No card ${k}. Keep holding still…`);
+    } catch (e) { camStatus(e.message); await sleep(1500); }
+    $('#guide').classList.remove('hit');
+    last = null;
+  }
+}
+function stopCam() {
+  scanning = false;
+  stream?.getTracks().forEach(t => t.stop());
+  stream = null;
+  $('#video').srcObject = null;
+  $('#cam').hidden = true;
+}
+$('#scan').onclick = startCam;
+$('#camClose').onclick = stopCam;
+document.addEventListener('visibilitychange', () => { if (document.hidden && scanning) stopCam(); });
+
+// ---------- photo fallback ----------
 $('#photo').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f) return;
@@ -173,70 +323,53 @@ $('#photo').onchange = async e => {
   try {
     const img = await createImageBitmap(f);
     status('Reading the card number…');
-    let p = parseNum(await ocr(img, true));
-    if (!p) { status('Looking harder…'); p = parseNum(await ocr(img, false)); }
+    const h = Math.round(img.height * 0.15);
+    let p = parseNum(await readRegion(img, 0, img.height - h, img.width, h));
+    if (!p) { status('Looking harder…'); p = parseNum(await readRegion(img, 0, 0, img.width, img.height)); }
     if (!p) return status('Could not read the number. Try again, or type it below.');
     $('#q').value = `${p.num}/${p.total}`;
-    await findByNum(p);
+    status(`Found ${p.num}/${p.total}. Getting price…`);
+    showResults(await findByNum(p));
   } catch (err) { status('Error: ' + err.message); }
 };
 
-async function findByNum(p) {
-  status(`Found ${p.num}/${p.total}. Looking up price…`);
-  let cards = await api(numQuery(p));
-  if (!cards.length) cards = await api(numQuery(p, false));
-  showResults(cards);
-}
-
+// ---------- typed search ----------
 $('#search').onsubmit = async e => {
   e.preventDefault();
   const t = $('#q').value.trim().replace(/"/g, '');
   if (!t) return;
+  $('#results').innerHTML = '';
+  status('Searching…');
   try {
     const p = parseNum(t);
-    if (p) return await findByNum(p);
-    status('Searching…');
-    showResults(await api(`name:"${t}*"`));
+    showResults(p ? await findByNum(p) : await findByName(t));
   } catch (err) { status('Error: ' + err.message); }
 };
 
 function status(t) { $('#status').textContent = t; }
 
+// ---------- results ----------
 let shown = [];
 function showResults(cards) {
   shown = cards;
-  status(cards.length ? (cards.length > 1 ? 'Tap the version that matches your card:' : 'Is this your card?') : 'No card found. Check the number and try again.');
-  $('#results').innerHTML = cards.map((c, i) => {
-    const tp = c.tcgplayer?.prices || {};
-    const keys = Object.keys(tp);
-    const btns = keys.length
-      ? keys.map(k => `<button class="btn small" data-i="${i}" data-v="${k}">+ ${pretty(k)} <span class="price">${usd(tp[k].market ?? tp[k].mid)}</span></button>`).join('')
-      : `<button class="btn small" data-i="${i}" data-v="normal">+ Add</button>`;
-    return `<div class="item"><img src="${c.images.small}" alt="" loading="lazy">
-      <div><h3>${esc(c.name)}</h3>
-      <div class="meta">${esc(c.set.name)} · ${esc(cardNo(c))} · Cardmarket ${eur(c.cardmarket?.prices?.trendPrice)}</div>
-      <div class="variants">${btns}</div></div></div>`;
-  }).join('');
-}
-
-function pricesOf(c, v) {
-  const tp = c.tcgplayer?.prices?.[v];
-  const cm = c.cardmarket?.prices || {};
-  return {
-    usd: tp ? (tp.market ?? tp.mid ?? null) : null,
-    eur: (v === 'reverseHolofoil' ? cm.reverseHoloTrend : cm.trendPrice) ?? null,
-  };
+  status(cards.length ? (cards.length > 1 ? 'Tap the version that matches your card:' : 'Tap your version to add it:') : 'No card found. Check the number and try again.');
+  $('#results').innerHTML = cards.map((c, i) => `<div class="item"><img src="${esc(c.img)}" alt="" loading="lazy">
+    <div><h3>${esc(c.name)}</h3>
+    <div class="meta">${esc(c.set)} · ${esc(c.no)}</div>
+    <div class="variants">${c.variants.map((x, j) =>
+      `<button class="btn small" data-i="${i}" data-j="${j}">+ ${esc(pretty(x.v))} <span class="price">${x.usd != null ? usd(x.usd) : eur(x.eur)}</span></button>`).join('')}</div>
+    </div></div>`).join('');
 }
 
 $('#results').onclick = e => {
   const b = e.target.closest('button[data-i]'); if (!b) return;
-  const c = shown[b.dataset.i], v = b.dataset.v, key = c.id + '|' + v;
-  const have = col.find(x => x.key === key);
+  const c = shown[b.dataset.i], x = c.variants[b.dataset.j], key = `${c.src}:${c.id}|${x.v}`;
+  const have = col.find(it => it.key === key);
   if (have) have.qty++;
-  else col.push({ key, id: c.id, variant: v, name: c.name, set: c.set.name,
-    num: cardNo(c), img: c.images.small, qty: 1, ...pricesOf(c, v) });
+  else col.push({ key, src: c.src, id: c.id, variant: x.v, name: c.name, set: c.set, num: c.no,
+    img: c.img, qty: 1, usd: x.usd, eur: x.eur });
   save();
-  status(`Added ${c.name} (${pretty(v)}). Scan the next one!`);
+  status(`Added ${c.name} (${pretty(x.v)}). Scan the next one!`);
   b.textContent = '✓ Added';
 };
 
@@ -247,9 +380,9 @@ function renderCol() {
   $('#sum-usd').textContent = usd(col.reduce((s, x) => s + (x.usd || 0) * x.qty, 0));
   $('#sum-eur').textContent = 'Cardmarket ' + eur(col.reduce((s, x) => s + (x.eur || 0) * x.qty, 0));
   const sorted = [...col].sort((a, b) => (b.usd || 0) - (a.usd || 0));
-  $('#list').innerHTML = sorted.length ? sorted.map(x => `<div class="item"><img src="${x.img}" alt="" loading="lazy">
+  $('#list').innerHTML = sorted.length ? sorted.map(x => `<div class="item"><img src="${esc(x.img)}" alt="" loading="lazy">
     <div><h3>${esc(x.name)}</h3>
-    <div class="meta">${esc(x.set)} · ${esc(x.num)} · ${pretty(x.variant)}</div>
+    <div class="meta">${esc(x.set)} · ${esc(x.num)} · ${esc(pretty(x.variant))}</div>
     <div><span class="price">${usd(x.usd)}</span> <span class="eur">· ${eur(x.eur)}</span></div>
     <div class="qty"><button data-k="${esc(x.key)}" data-d="-1" aria-label="One less">−</button>
       <span class="price">×${x.qty}</span>
@@ -273,15 +406,30 @@ $('#list').onclick = e => {
 
 $('#refresh').onclick = async () => {
   const b = $('#refresh'); b.disabled = true;
+  const srcOf = x => x.src || 'ptcg'; // cards saved by the first version have no src
+  const apply = cards => { for (const c of cards) for (const x of col) {
+    if (x.id !== c.id || srcOf(x) !== c.src) continue;
+    const v = c.variants.find(v => v.v === x.variant);
+    if (v) { x.usd = v.usd; x.eur = v.eur; }
+  } };
+  let failed = 0;
   try {
-    const ids = [...new Set(col.map(x => x.id))];
-    for (let i = 0; i < ids.length; i += 25) {
-      b.textContent = `Updating ${i}/${ids.length}…`;
-      const cards = await api(ids.slice(i, i + 25).map(id => `id:${id}`).join(' OR '), 25);
-      for (const c of cards) for (const x of col) if (x.id === c.id) Object.assign(x, pricesOf(c, x.variant));
+    const dexIds = [...new Set(col.filter(x => srcOf(x) === 'dex').map(x => x.id))];
+    const ptcgIds = [...new Set(col.filter(x => srcOf(x) === 'ptcg').map(x => x.id))];
+    const all = dexIds.length + ptcgIds.length;
+    for (let i = 0; i < dexIds.length; i += 6) {
+      b.textContent = `Updating ${i}/${all}…`;
+      const part = dexIds.slice(i, i + 6), got = await dexFull(part);
+      failed += part.length - got.length; apply(got);
     }
-    save(); b.textContent = '✓ Prices updated';
-  } catch (err) { b.textContent = 'Failed, tap to retry'; }
+    for (let i = 0; i < ptcgIds.length; i += 25) {
+      b.textContent = `Updating ${dexIds.length + i}/${all}…`;
+      try { apply(await ptcgSearch(ptcgIds.slice(i, i + 25).map(id => `id:${id}`).join(' OR '), 25)); }
+      catch { failed += Math.min(25, ptcgIds.length - i); }
+    }
+    save();
+    b.textContent = failed ? `Updated, ${failed} failed. Tap to retry` : '✓ Prices updated';
+  } catch { b.textContent = 'Failed, tap to retry'; }
   b.disabled = false;
 };
 
@@ -302,6 +450,7 @@ $('#import').onchange = async e => {
 
 // ---------- tabs ----------
 function tab(which) {
+  if (which !== 'scan') stopCam();
   $('#view-scan').hidden = which !== 'scan';
   $('#view-col').hidden = which !== 'col';
   $('#tab-scan').setAttribute('aria-selected', which === 'scan');
